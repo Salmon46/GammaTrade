@@ -1,0 +1,30 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "gammatrade_infrastructure"
+    static_configs:
+      - targets: ["gammatrade_redis_exporter:9121"]
+        labels:
+          service: "redis"
+      - targets: ["gammatrade_cadvisor:8080"]
+        labels:
+          service: "cadvisor"
+
+  - job_name: "gammatrade_services"
+    static_configs:
+      - targets: ["gammatrade_m_adapter_1:8000"]
+        labels:
+          service: "m_adapter_1"
+          type: "ingestion"
+
+      - targets: ["gammatrade_strategy_engine:8000"]
+        labels:
+          service: "strategy_engine"
+          type: "processing"
+
+      - targets: ["gammatrade_execution_router:8000"]
+        labels:
+          service: "execution_router"
+          type: "processing"

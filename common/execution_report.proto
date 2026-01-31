@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package gammatrade;
+
+// ExecutionStatus enum
+enum ExecutionStatus {
+    PENDING = 0;
+    SUBMITTED = 1;
+    PARTIAL_FILL = 2;
+    FILLED = 3;
+    CANCELLED = 4;
+    REJECTED = 5;
+    EXPIRED = 6;
+    FAILED = 7;
+}
+
+// ExecutionReport message for order status updates from E-Adapters.
+message ExecutionReport {
+    // Original signal ID this report corresponds to
+    string signal_id = 1;
+    
+    // Broker-assigned order ID
+    string order_id = 2;
+    
+    // Trading symbol
+    string symbol = 3;
+    
+    // Current execution status
+    ExecutionStatus status = 4;
+    
+    // Requested quantity
+    double requested_quantity = 5;
+    
+    // Filled quantity
+    double filled_quantity = 6;
+    
+    // Average fill price
+    double average_fill_price = 7;
+    
+    // Remaining quantity
+    double remaining_quantity = 8;
+    
+    // Commission/fees paid
+    double commission = 9;
+    
+    // Execution adapter that processed this order
+    string adapter = 10;
+    
+    // Unix timestamp in milliseconds
+    int64 timestamp = 11;
+    
+    // Error message (if status is REJECTED or FAILED)
+    string error_message = 12;
+    
+    // Additional metadata
+    map<string, string> metadata = 13;
+}
+
+// TradeCompleted message for successful trades (sent to Data Logger)
+message TradeCompleted {
+    // Original signal ID
+    string signal_id = 1;
+    
+    // Broker-assigned order ID
+    string order_id = 2;
+    
+    // Trading symbol
+    string symbol = 3;
+    
+    // Side (BUY or SELL)
+    string side = 4;
+    
+    // Filled quantity
+    double quantity = 5;
+    
+    // Average fill price
+    double price = 6;
+    
+    // Total value (quantity * price)
+    double total_value = 7;
+    
+    // Commission/fees
+    double commission = 8;
+    
+    // Strategy that generated the signal
+    string strategy_id = 9;
+    
+    // Execution adapter
+    string adapter = 10;
+    
+    // Unix timestamp in milliseconds
+    int64 timestamp = 11;
+}

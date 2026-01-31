@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package gammatrade;
+
+// ExternalDataType enum
+enum ExternalDataType {
+    UNKNOWN_EXTERNAL = 0;
+    WEATHER = 1;
+    NEWS = 2;
+    SENTIMENT = 3;
+    ECONOMIC_INDICATOR = 4;
+}
+
+// WeatherCondition enum
+enum WeatherCondition {
+    UNKNOWN_WEATHER = 0;
+    CLEAR = 1;
+    CLOUDY = 2;
+    RAIN = 3;
+    SNOW = 4;
+    STORM = 5;
+    FOG = 6;
+}
+
+// ExternalData message for alternative data sources.
+message ExternalData {
+    // Type of external data
+    ExternalDataType type = 1;
+    
+    // Source identifier (e.g., "open-meteo", "news-api")
+    string source = 2;
+    
+    // Location (for weather data)
+    string location = 3;
+    
+    // Latitude (for geo-located data)
+    double latitude = 4;
+    
+    // Longitude (for geo-located data)
+    double longitude = 5;
+    
+    // Unix timestamp in milliseconds
+    int64 timestamp = 6;
+    
+    // Weather-specific fields
+    double temperature_celsius = 10;
+    double humidity_percent = 11;
+    double wind_speed_kmh = 12;
+    WeatherCondition condition = 13;
+    
+    // News/Sentiment-specific fields
+    string headline = 20;
+    double sentiment_score = 21;  // -1.0 (negative) to 1.0 (positive)
+    repeated string related_symbols = 22;
+    
+    // Generic value field for numeric data
+    double value = 30;
+    
+    // Raw payload as JSON string (for complex/unstructured data)
+    string raw_payload = 40;
+    
+    // Additional metadata
+    map<string, string> metadata = 50;
+}

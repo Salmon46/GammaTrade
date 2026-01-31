@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package gammatrade;
+
+// StrategyConfig represents the current configuration and state of a trading strategy.
+// This message is broadcast by the Strategy Engine to announce its parameters.
+message StrategyConfig {
+    // Unique identifier for the running strategy instance
+    string strategy_id = 1;
+
+    // Name of the strategy (e.g., "Panopticon", "WeatherEnergy")
+    string strategy_name = 2;
+
+    // Whether the strategy is in dry-run mode (not executing real trades)
+    bool dry_run = 3;
+
+    // Maximum number of concurrent open trades allowed
+    int32 max_open_trades = 4;
+
+    // Base stake amount per trade
+    double stake_amount = 5;
+
+    // Unix timestamp (ms) of when this config was last broadcast
+    int64 last_update = 6;
+
+    // Specific parameters as a map (flexible for different strategy types)
+    // e.g., "cold_threshold": "-5.0", "ma_window": "50"
+    map<string, string> parameters = 7;
+
+    // List of symbols currently being watched/traded
+    repeated string watchlist = 8;
+}

@@ -1,0 +1,41 @@
+# Python Base Image for GammaTrade Services
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies
+# Use fast US mirror for Debian
+# Use fast US mirror for Debian Main, but restore Security to official
+RUN sed -i 's|http://deb.debian.org/debian|http://ftp.us.debian.org/debian|g' /etc/apt/sources.list.d/debian.sources && \
+    sed -i 's|http://ftp.us.debian.org/debian-security|http://security.debian.org/debian-security|g' /etc/apt/sources.list.d/debian.sources
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    redis \
+    pandas \
+    requests \
+    protobuf \
+    alpaca-py \
+    aiohttp \
+    pytz \
+    asyncpg \
+    prometheus-client
+
+# Set working directory
+WORKDIR /app
+
+# Copy entrypoint script
+COPY entrypoint.python.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+
+# Default command (overridden by specific services)
+CMD ["python", "-u", "main.py"]

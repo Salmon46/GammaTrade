@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package gammatrade;
+
+// MarketData message represents a single price update from a market data provider.
+message MarketData {
+    // Type of market data (e.g., "PRICE", "TRADE", "QUOTE")
+    string type = 1;
+    
+    // Trading symbol (e.g., "BTC/USD", "AAPL", "ETH-USD")
+    string symbol = 2;
+    
+    // Current price
+    double price = 3;
+    
+    // Bid price (for quote data)
+    double bid_price = 4;
+    
+    // Ask price (for quote data)
+    double ask_price = 5;
+    
+    // Volume (for trade data)
+    double volume = 6;
+    
+    // Unix timestamp in milliseconds
+    int64 timestamp = 7;
+    
+    // Data source identifier (e.g., "alpaca", "coinbase")
+    string source = 8;
+    
+    // Optional: Additional metadata as key-value pairs
+    map<string, string> metadata = 9;
+}
+
+// MarketDataBatch for sending multiple updates efficiently
+message MarketDataBatch {
+    repeated MarketData data = 1;
+}

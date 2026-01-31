@@ -1,0 +1,249 @@
+version: '3.8'
+
+services:
+  # =============================================================================
+  # INFRASTRUCTURE SERVICES
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: gammatrade_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: gammatrade_db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-gammatrade}
+      POSTGRES_USER: ${POSTGRES_USER:-gammatrade}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gammatrade}
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # =============================================================================
+  # MARKET DATA INGESTION (M-Adapters)
+  # =============================================================================
+  m_adapter_1_alpaca:
+    build:
+      context: .
+      dockerfile: Dockerfile.python_base
+    container_name: gammatrade_m_adapter_1
+    volumes:
+      - ./m_ingestion/m_adapter_1_py:/app
+      - ./common:/app/common
+    environment:
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - ALPACA_API_KEY=${ALPACA_API_KEY}
+      - ALPACA_API_SECRET=${ALPACA_API_SECRET}
+      - ALPACA_BASE_URL=${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  m_adapter_2_coinbase:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpp_base
+    container_name: gammatrade_m_adapter_2
+    volumes:
+      - ./m_ingestion/m_adapter_2_cpp:/app
+      - ./common:/app/common
+    environment:
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - COINBASE_API_KEY=${COINBASE_API_KEY}
+      - COINBASE_API_SECRET=${COINBASE_API_SECRET}
+    depends_on:
+      - redis
+    command: [ "./build/m_adapter_2" ]
+    restart: unless-stopped
+
+  # =============================================================================
+  # EXTERNAL DATA INGESTION (O-Adapters)
+  # =============================================================================
+  o_adapter_1_openmeteo:
+    build:
+      context: .
+      dockerfile: Dockerfile.python_base
+    container_name: gammatrade_o_adapter_1
+    volumes:
+      - ./o_ingestion/o_adapter_1_py:/app
+      - ./common:/app/common
+    environment:
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - OPEN_METEO_BASE_URL=${OPEN_METEO_BASE_URL}
+      - OPEN_METEO_LATITUDE=${OPEN_METEO_LATITUDE}
+      - OPEN_METEO_LONGITUDE=${OPEN_METEO_LONGITUDE}
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # =============================================================================
+  # PROCESSING SERVICES
+  # =============================================================================
+  strategy_engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.python_base
+    container_name: gammatrade_strategy_engine
+    volumes:
+      - ./processing/strategy_engine:/app
+      - ./common:/app/common
+    environment:
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+    depends_on:
+      - redis
+      - m_adapter_1_alpaca
+    restart: unless-stopped
+
+  execution_router:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpp_base
+    container_name: gammatrade_execution_router
+    volumes:
+      - ./processing/execution_router:/app
+      - ./common:/app/common
+    environment:
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+    depends_on:
+      - redis
+      - strategy_engine
+    command: [ "./build/execution_router" ]
+    restart: unless-stopped
+
+  # =============================================================================
+  # EXECUTION SERVICES (E-Adapters)
+  # =============================================================================
+  e_adapter_1_alpaca:
+    build:
+      context: .
+      dockerfile: Dockerfile.python_base
+    container_name: gammatrade_e_adapter_1
+    volumes:
+      - ./execution/e_adapter_1_py:/app
+      - ./common:/app/common
+    environment:
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - ALPACA_API_KEY=${ALPACA_API_KEY}
+      - ALPACA_API_SECRET=${ALPACA_API_SECRET}
+      - ALPACA_BASE_URL=${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
+      - PAPER_TRADING=${PAPER_TRADING:-true}
+    depends_on:
+      - redis
+      - execution_router
+    restart: unless-stopped
+
+  e_adapter_2_coinbase:
+    build:
+      context: .
+      dockerfile: Dockerfile.cpp_base
+    image: gammatrade-e_adapter_2_coinbase:latest
+    container_name: gammatrade_e_adapter_2
+    command: ./build/e_adapter_2
+    volumes:
+      - ./execution/e_adapter_2_cpp:/app
+      - ./common:/app/common
+    environment:
+      - COINBASE_API_KEY=${COINBASE_API_KEY}
+      - COINBASE_API_SECRET=${COINBASE_API_SECRET}
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
+      - execution_router
+    restart: unless-stopped
+
+  # =============================================================================
+  # STORAGE SERVICES
+  # =============================================================================
+  data_logger:
+    build:
+      context: .
+      dockerfile: Dockerfile.python_base
+    container_name: gammatrade_data_logger
+    volumes:
+      - ./storage/data_logger:/app
+      - ./common:/app/common
+    environment:
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - POSTGRES_HOST=${POSTGRES_HOST:-timescaledb}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-gammatrade}
+      - POSTGRES_USER=${POSTGRES_USER:-gammatrade}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-gammatrade}
+    depends_on:
+      - redis
+      - timescaledb
+    restart: unless-stopped
+
+  # =============================================================================
+  # MONITORING SERVICES
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: gammatrade_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: gammatrade_grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  redis_exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: gammatrade_redis_exporter
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    ports:
+      - "9121:9121"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: gammatrade_cadvisor
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    restart: unless-stopped
+
+volumes:
+  redis_data:
+  timescale_data:
+  prometheus_data:
+  grafana_data:

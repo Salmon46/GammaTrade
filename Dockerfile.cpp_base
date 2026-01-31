@@ -1,0 +1,68 @@
+# C++ Base Image for GammaTrade Services
+FROM ubuntu:22.04
+
+# Avoid interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies
+# Install build dependencies
+# Use official US mirror (more reliable than university mirrors, faster than default)
+RUN sed -i 's|http://archive.ubuntu.com/ubuntu/|http://us.archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list && \
+    sed -i 's|http://security.ubuntu.com/ubuntu/|http://us.archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    pkg-config \
+    git \
+    wget \
+    ca-certificates \
+    # Redis client
+    libhiredis-dev \
+    # Protocol Buffers
+    protobuf-compiler \
+    libprotobuf-dev \
+    # SSL/Crypto for Coinbase API
+    libssl-dev \
+    # Boost (for legacy Coinbase client)
+    libboost-all-dev \
+    # Logging
+    libspdlog-dev \
+    # JSON (legacy support)
+    nlohmann-json3-dev \
+    # WebSocket library
+    libwebsocketpp-dev \
+    # Prometheus-cpp dependencies
+    zlib1g-dev \
+    libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install prometheus-cpp
+RUN git clone --depth 1 -b v1.1.0 https://github.com/jupp0r/prometheus-cpp.git && \
+    cd prometheus-cpp && \
+    git submodule update --init --recursive --depth 1 && \
+    mkdir _build && \
+    cd _build && \
+    cmake .. -DBUILD_SHARED_LIBS=OFF -DENABLE_PUSH=OFF -DENABLE_COMPRESSION=OFF && \
+    make -j$(nproc) && \
+    make install && \
+    cd ../.. && \
+    rm -rf prometheus-cpp
+
+# Install cpp-httplib (header-only library)
+RUN mkdir -p /usr/local/include && \
+    wget -q https://raw.githubusercontent.com/yhirose/cpp-httplib/master/httplib.h \
+    -O /usr/local/include/httplib.h
+
+# Set working directory
+WORKDIR /app
+
+# Copy entrypoint script
+COPY entrypoint.cpp.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Use entrypoint to build before running
+ENTRYPOINT ["/entrypoint.sh"]
+
+# Default command (shows help)
+CMD ["echo", "Specify a binary to run, e.g. ./build/m_adapter_2"]
