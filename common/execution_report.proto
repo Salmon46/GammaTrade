@@ -52,8 +52,11 @@ message ExecutionReport {
     // Error message (if status is REJECTED or FAILED)
     string error_message = 12;
     
+    // Trade side (BUY or SELL)
+    string side = 14;
+    
     // Additional metadata
-    map<string, string> metadata = 13;
+    map<string, string> metadata = 15;
 }
 
 // TradeCompleted message for successful trades (sent to Data Logger)

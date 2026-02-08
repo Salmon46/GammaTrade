@@ -105,7 +105,8 @@ class StrategyEngine:
         self,
         redis_client: redis.Redis,
         signal_channel: str = 'trade_signals',
-        feedback_channel: str = 'strategy_feedback'
+        feedback_channel: str = 'strategy_feedback',
+        initial_cash: float = 100000.0
     ):
         self.redis_client = redis_client
         self.signal_channel = signal_channel
@@ -120,11 +121,15 @@ class StrategyEngine:
         self.positions: Dict[str, float] = {}  # symbol -> quantity
         self.avg_entry_prices: Dict[str, float] = {} # symbol -> avg entry price
         self.realized_pnl: Dict[str, float] = defaultdict(float) # symbol -> realized pnl
-        self.starting_cash = 100000.0
+        self.starting_cash = initial_cash
 
         
         # Strategy parameters
-        self.position_size = 1.0     # Default position size (e.g. 1 share/contract)
+        # self.position_size = 1.0     # REMOVED: Fixed size
+        self.risk_per_trade = 0.01     # 1% risk per trade
+        self.sizing_stop_loss_pct = 0.02 # 2% estimated stop distance for sizing
+        self.account_balances: Dict[str, float] = {} # adapter -> equity
+
         
         # Symbols to trade
         self.watchlist: set = set()
@@ -175,9 +180,7 @@ class StrategyEngine:
                     'status': msg.status,
                     'filled_quantity': msg.filled_quantity,
                     'average_fill_price': msg.average_fill_price,
-                    # Note: ExecutionReport typically doesn't have side directly, usually inferred from order or metadata
-                    # For this fix, we assume the system puts Side in metadata or we deduce change.
-                    # Actually, let's just use the quantity change logic in _handle_execution.
+                    'side': msg.side
                 }
             except Exception as e:
                 logger.debug(f"Failed to parse ExecReport as Protobuf: {e}")
@@ -214,7 +217,52 @@ class StrategyEngine:
             logger.error(f"Failed to deserialize market data: {e}")
             metrics.record_error("strategy_engine", "deserialization_error")
             return None
-    
+
+    def _handle_account_update(self, data: bytes):
+        """Process account update message."""
+        try:
+            import json
+            msg = json.loads(data.decode('utf-8'))
+            adapter = msg.get('adapter', 'unknown')
+            equity = float(msg.get('equity', 0.0))
+            
+            if adapter != 'unknown':
+                self.account_balances[adapter] = equity
+                # logger.debug(f"Updated equity for {adapter}: {equity}")
+                
+        except Exception as e:
+            logger.error(f"Failed to handle account update: {e}")
+
+    def _calculate_position_quantity(self, symbol: str, price: float, target_adapter: str = 'alpaca') -> float:
+        """
+        Calculate position size based on risk percentage.
+        Quantity = (Equity * Risk%) / (Price * StopLoss%)
+        """
+        if price <= 0:
+            return 0.0
+            
+        equity = self.account_balances.get(target_adapter, 0.0)
+        
+        # Safer to use 0 or log warning. For now let's use starting_cash as fallback if equity is 0
+        if equity <= 0:
+            if self.starting_cash > 0:
+                equity = self.starting_cash
+            else:
+                logger.warning(f"No equity data for {target_adapter}, cannot size trade.")
+                return 0.0
+        
+        risk_amount = equity * self.risk_per_trade
+        stop_distance = price * self.sizing_stop_loss_pct
+        
+        if stop_distance == 0:
+            return 0.0
+            
+        quantity = risk_amount / stop_distance
+        
+        # Rounding (crypto often allows decimals, stocks might need valid steps)
+        # For now round to 4 decimals
+        return round(quantity, 4)
+
     def _serialize_signal(self, signal_data: Dict[str, Any]) -> bytes:
         """Serialize trade signal to Protobuf."""
         if self._protobuf_available:
@@ -294,50 +342,42 @@ class StrategyEngine:
         if not (is_filled or is_partial) or filled_qty <= 0:
             return
 
-        logger.info(f"EXECUTION: {symbol} Filled {filled_qty} @ {avg_price}")
+        if not (is_filled or is_partial) or filled_qty <= 0:
+            return
+
+        logger.info(f"EXECUTION: {symbol} Filled {filled_qty} @ {avg_price} Side: {data.get('side', 'UNKNOWN')}")
         
-        # Update Positions and P&L (Naive implementation: assume LONG only for now or infer side)
-        # Since ExecutionReport doesn't explicitly store side in some standard versions, 
-        # we might need to rely on the strategy remembering its open orders or simpler logic.
-        # For this dashboard fix, let's assume if we are receiving an exec and we have 0 position, it's a BUY.
-        # If we have position, it's a SELL? No, that's dangerous.
-        # Let's assume the Strategy Engine knows what it submitted. 
-        # But this is a stateless update. 
-        # CRITICAL: We need Side. If missing, we can't accurately track.
-        # However, looking at the previous optimistic code:
-        # BUY -> +size, SELL -> 0.
-        # Let's try to maintain that logic but driven by fills.
-        
-        # Simplification: If we have no position, treat as Entry. If we have position, treat as Exit?
-        # A bit risky. Better: use 'side' from metadata if available, OR simple toggling.
-        # Strategy has state.
-        
+        # Consistent Position Tracking using Metadata Side
+        side = data.get('side', 'UNKNOWN')
         current_pos = self.positions.get(symbol, 0.0)
         
-        # Infer side based on state (Not ideal but improvements require protocol change)
-        # If we sent a BUY recently, we expect a BUY fill.
-        # But here, let's just say:
-        # If current_pos == 0 => BUY (Entry)
-        # If current_pos > 0 => SELL (Exit)
-        
-        if current_pos == 0:
-             # ENTRY
-             self.positions[symbol] = filled_qty
-             self.avg_entry_prices[symbol] = avg_price
-             logger.info(f"Position OPEN: {symbol} {filled_qty}")
-        else:
-             # EXIT
-             # Calculate Realized PnL
-             pnl = (avg_price - self.avg_entry_prices.get(symbol, 0.0)) * filled_qty
+        if side == 'BUY':
+             # ENTRY / INCREASE
+             # Weighted Average Price Update
+             total_cost = (current_pos * self.avg_entry_prices.get(symbol, 0.0)) + (filled_qty * avg_price)
+             new_qty = current_pos + filled_qty
+             self.positions[symbol] = new_qty
+             self.avg_entry_prices[symbol] = total_cost / new_qty if new_qty > 0 else 0.0
+             logger.info(f"Position UPDATE (BUY): {symbol} NewQty: {new_qty} AvgPrice: {self.avg_entry_prices[symbol]:.2f}")
+             
+        elif side == 'SELL':
+             # EXIT / DECREASE
+             # Calculate Realized PnL based on AVG Entry
+             entry_price = self.avg_entry_prices.get(symbol, 0.0)
+             pnl = (avg_price - entry_price) * filled_qty
              self.realized_pnl[symbol] += pnl
              metrics.REALIZED_PNL.labels(symbol=symbol).set(self.realized_pnl[symbol])
              
              self.positions[symbol] = max(0, current_pos - filled_qty)
              if self.positions[symbol] == 0:
                  self.avg_entry_prices[symbol] = 0.0
-             logger.info(f"Position CLOSE: {symbol} PnL: {pnl}")
+             logger.info(f"Position UPDATE (SELL): {symbol} PnL: {pnl:.2f} Remaining: {self.positions[symbol]}")
+             
+        else:
+            logger.warning(f"Execution report for {symbol} missing side metadata. Position not updated.")
+            return  # Don't update metrics if we didn't update position
 
-        metrics.CURRENT_POSITION.labels(symbol=symbol).set(self.positions[symbol])
+        metrics.CURRENT_POSITION.labels(symbol=symbol).set(self.positions.get(symbol, 0.0))
     
     def _evaluate_strategy(self, symbol: str, start_time: float):
         """
@@ -393,11 +433,22 @@ class StrategyEngine:
             state.previous_state = current_state
         
         if signal:
-            self._generate_signal(symbol, signal, reason, start_time)
+            # Pass current_price which is the last price in market state
+            current_price = state.prices[-1] if state.prices else 0.0
+            self._generate_signal(symbol, signal, reason, start_time, current_price)
     
-    def _generate_signal(self, symbol: str, action: str, reason: str, start_time: float):
+    def _generate_signal(self, symbol: str, action: str, reason: str, start_time: float, current_price: float):
         """Generate and publish a trade signal."""
+        # Calculate dynamic quantity
+        target_adapter = 'alpaca' # Default target
+        quantity = self._calculate_position_quantity(symbol, current_price, target_adapter)
+        
+        if quantity <= 0:
+            logger.warning(f"Calculated quantity is 0 for {symbol}. Signal skipped.")
+            return
+
         # Metric: Signal Generated
+
         metrics.SIGNALS_GENERATED.labels(
             symbol=symbol,
             action=action,
@@ -414,8 +465,8 @@ class StrategyEngine:
             'signal_id': signal_id,
             'symbol': symbol,
             'action': action,
-            'quantity': float(self.position_size),
-            'target_adapter': 'alpaca',  # User requested target: Alpaca
+            'quantity': quantity,
+            'target_adapter': target_adapter,  # User requested target: Alpaca
             'strategy_id': 'sma_crossover',
             'confidence': 0.8,
             'timestamp': int(time.time() * 1000),
@@ -429,7 +480,7 @@ class StrategyEngine:
         serialized = self._serialize_signal(signal_data)
         self.redis_client.publish(self.signal_channel, serialized)
         
-        logger.info(f"SIGNAL: {action} {self.position_size} {symbol} - {reason}")
+        logger.info(f"SIGNAL: {action} {quantity} {symbol} - {reason}")
     
     async def _broadcast_config(self):
         """Broadcast current configuration to Redis."""
@@ -442,7 +493,7 @@ class StrategyEngine:
             config.strategy_name = "SMACrossover"
             config.dry_run = False 
             config.max_open_trades = 5
-            config.stake_amount = self.position_size
+            config.stake_amount = 0.0 # Dynamic
             config.last_update = int(time.time() * 1000)
             
             config.parameters["sma_fast"] = "10"
@@ -465,9 +516,10 @@ class StrategyEngine:
         # Subscribe to market data channels
         self._pubsub = self.redis_client.pubsub()
         self._pubsub.psubscribe('market_data_*', self.feedback_channel)
+        self._pubsub.subscribe('account_updates')
         
         logger.info("Strategy Engine started (SMA Crossover)")
-        logger.info(f"Subscribed to: market_data_*, {self.feedback_channel}")
+        logger.info(f"Subscribed to: market_data_*, {self.feedback_channel}, account_updates")
         
         last_broadcast = 0
         
@@ -498,6 +550,15 @@ class StrategyEngine:
                         parsed = self._deserialize_execution_report(data)
                         if parsed:
                             self._handle_execution_report(parsed)
+                
+                elif message and message['type'] == 'message':
+                    channel = message['channel']
+                    if isinstance(channel, bytes):
+                        channel = channel.decode('utf-8')
+                    data = message['data']
+                    
+                    if channel == 'account_updates':
+                        self._handle_account_update(data)
                 
                 await asyncio.sleep(0.01)  # Small yield
                 

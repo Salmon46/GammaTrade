@@ -129,10 +129,42 @@ class AlpacaExecutionAdapter:
             msg.timestamp = report_data.get('timestamp', int(time.time() * 1000))
             msg.error_message = report_data.get('error_message', '')
             
+            # Set side field directly
+            msg.side = report_data.get('side', '')
+            
             return msg.SerializeToString()
         else:
             import json
             return json.dumps(report_data).encode('utf-8')
+
+    async def _broadcast_account_info(self):
+        """Fetch and broadcast account information."""
+        try:
+            account = self.trading_client.get_account()
+            
+            # Extract relevant fields
+            # Alpaca Account object has 'equity', 'cash', 'buying_power' as strings usually
+            equity = float(account.equity) if hasattr(account, 'equity') else 0.0
+            cash = float(account.cash) if hasattr(account, 'cash') else 0.0
+            buying_power = float(account.buying_power) if hasattr(account, 'buying_power') else 0.0
+            
+            update_data = {
+                'adapter': 'alpaca',
+                'equity': equity,
+                'cash': cash,
+                'buying_power': buying_power,
+                'currency': account.currency if hasattr(account, 'currency') else 'USD',
+                'timestamp': int(time.time() * 1000)
+            }
+            
+            # Use JSON for account updates for now as we don't have a specific Proto for it yet
+            import json
+            self.redis_client.publish('account_updates', json.dumps(update_data))
+            # logger.debug(f"Broadcasted account update: Equity {equity}")
+                
+        except Exception as e:
+            logger.error(f"Failed to broadcast account info: {e}")
+
     
     async def execute_order(self, signal: Dict[str, Any]) -> Dict[str, Any]:
         """Execute an order via Alpaca API."""
@@ -185,7 +217,10 @@ class AlpacaExecutionAdapter:
                 'average_fill_price': float(order.filled_avg_price or 0),
                 'remaining_quantity': quantity - float(order.filled_qty or 0),
                 'commission': 0.0,
-                'timestamp': int(time.time() * 1000)
+                'remaining_quantity': quantity - float(order.filled_qty or 0),
+                'commission': 0.0,
+                'timestamp': int(time.time() * 1000),
+                'side': 'BUY' if side == OrderSide.BUY else 'SELL'
             }
             
         except Exception as e:
@@ -201,7 +236,8 @@ class AlpacaExecutionAdapter:
                 'remaining_quantity': quantity,
                 'commission': 0,
                 'timestamp': int(time.time() * 1000),
-                'error_message': str(e)
+                'error_message': str(e),
+                'side': 'BUY' if side == OrderSide.BUY else 'SELL'
             }
     
     async def _process_signal(self, data: bytes):
@@ -235,8 +271,16 @@ class AlpacaExecutionAdapter:
         logger.info(f"Listening on: {self.exec_channel}")
         logger.info(f"Publishing to: {self.report_channel}")
         
+        last_broadcast_time = 0
+        
         while self._running:
             try:
+                # Periodic Account Broadcast (every 5 seconds)
+                now = time.time()
+                if now - last_broadcast_time > 5.0:
+                    await self._broadcast_account_info()
+                    last_broadcast_time = now
+
                 message = self._pubsub.get_message(timeout=0.1)
                 
                 if message and message['type'] == 'message':
