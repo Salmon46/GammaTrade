@@ -1,5 +1,7 @@
 # GammaTrade
 
+![Sample Grafana Dashboard](image.png "Sample Grafana Dashboard")
+
 GammaTrade is a high-performance algorithmic trading platform designed for hybrid execution using Python for strategy generation and C++ for low-latency execution routing.
 
 ## 🚀 Key Features
